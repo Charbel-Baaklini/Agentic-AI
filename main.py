@@ -242,7 +242,7 @@ def download_image(image_url: str, filename: str = "slide_image.png") -> Optiona
     try:
         resp = requests.get(
             image_url,
-            timeout=20,
+            timeout=30,
             headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
         )
         resp.raise_for_status()
