@@ -20,7 +20,6 @@ CSE_ID = "your_cse_id_here"
 1. Open terminal in the project folder:
 
 2. Create and activate a venv:
-**Windows (PowerShell):**
 python -m venv venv
 .\venv\Scripts\Activate.ps1
 
@@ -31,7 +30,7 @@ pip install -r requirements.txt
 python main.py
 
 5.Enter the prompt for your PowerPoint slide:
-Make a presentation about volcanoes.
+Make a detailed presentation about lions, covering habitat, hunting behavior, pride structure, evolution, and threats to survival.
 
 6.Your PowerPoint file will be created here:
 outputs/output_deck.pptx
@@ -45,5 +44,3 @@ Summary:
 - The LLM (OpenAI) generates the slide content.
 - SerpAPI searches for one related image.
 - The final PPTX is fully created by Python using `python-pptx`.
-
-

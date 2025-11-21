@@ -44,7 +44,7 @@ def clean_json_string(s: str) -> str:
     """
     s = s.strip()
     if s.startswith("```"):
-        # Remove leading ```
+        # Remove leading ``` block
         parts = s.split("```", 1)
         if len(parts) > 1:
             s = parts[1].strip()
@@ -81,7 +81,7 @@ def safe_json_parse(s: str, fallback: Any) -> Any:
 def extract_main_topic(prompt: str) -> str:
     """
     Extracts a single main topic (1–2 words) from a long prompt
-    to be used for image search.
+    to be used for image search and styling.
     """
     system_msg = (
         "You will be given a long presentation prompt.\n"
@@ -184,17 +184,175 @@ def generate_slide_structure(prompt: str) -> Dict[str, Any]:
     return {"slides": norm_slides}
 
 
+def choose_topic_color(topic: str) -> RGBColor:
+    """
+    Ask the LLM to choose a color related to the topic.
+    Returns RGBColor parsed from hex or rgb(); if parsing fails,
+    falls back to a neutral blue.
+    """
+    system_msg = (
+        "You will be given a topic.\n"
+        "Return ONLY one color that best represents that topic.\n"
+        "The color must be given in one of these formats:\n"
+        "- Hex format like '#FFAA00'\n"
+        "- rgb(r,g,b)\n"
+        "No other text. No explanation."
+    )
+
+    resp = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": topic},
+        ],
+        max_tokens=20,
+        temperature=0.7,
+    )
+
+    color_str = resp.choices[0].message.content.strip().lower()
+
+    # Try hex format: #rrggbb
+    if color_str.startswith("#") and len(color_str) == 7:
+        try:
+            r = int(color_str[1:3], 16)
+            g = int(color_str[3:5], 16)
+            b = int(color_str[5:7], 16)
+            return RGBColor(r, g, b)
+        except Exception:
+            pass
+
+    # Try rgb(r,g,b)
+    if color_str.startswith("rgb"):
+        try:
+            inner = color_str.replace("rgb", "").replace("(", "").replace(")", "")
+            parts = inner.split(",")
+            r, g, b = [int(p.strip()) for p in parts]
+            return RGBColor(r, g, b)
+        except Exception:
+            pass
+
+    # Fallback neutral color if the model misbehaves
+    print(f"[Style] Could not parse color '{color_str}', using fallback.")
+    return RGBColor(0, 102, 204)
+
+
 # =========================
-# IMAGE SEARCH
+# MINI AGENT: PLAN → ACT → VERIFY
+# =========================
+
+def agent_plan_presentation(user_prompt: str) -> Dict[str, Any]:
+    """
+    PLAN step: Ask the model for a high-level plan of the presentation.
+    Returns a JSON like:
+    {
+      "goal": "...",
+      "sections": ["Intro", "Part 1", "Part 2", "Conclusion"],
+      "estimated_slide_count": 4
+    }
+    """
+    system_msg = (
+        "You are an assistant planning a slide presentation.\n"
+        "Given the user's prompt, return a JSON object with:\n"
+        "- 'goal': one sentence describing the main goal of the presentation\n"
+        "- 'sections': a list of short section names\n"
+        "- 'estimated_slide_count': an integer between 1 and 10\n"
+        "Return ONLY valid JSON."
+    )
+
+    resp = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": user_prompt},
+        ],
+        max_tokens=200,
+        temperature=0.0,
+    )
+
+    raw = resp.choices[0].message.content
+    fallback = {
+        "goal": user_prompt[:120],
+        "sections": ["Overview"],
+        "estimated_slide_count": 3,
+    }
+    plan = safe_json_parse(raw, fallback)
+    print(f"[Agent][Plan] Goal: {plan.get('goal')}")
+    print(f"[Agent][Plan] Sections: {plan.get('sections')}")
+    print(f"[Agent][Plan] Estimated slides: {plan.get('estimated_slide_count')}")
+    return plan
+
+
+def agent_verify_and_refine_slides(
+    user_prompt: str,
+    plan: Dict[str, Any],
+    slide_data: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    VERIFY step: Ask the model to check if the generated slides
+    match the user prompt and the initial plan.
+    It can optionally tweak titles or add one missing slide.
+    """
+    system_msg = (
+        "You are verifying a set of slides against a user prompt and a plan.\n"
+        "You will be given:\n"
+        "- the original user_prompt\n"
+        "- a 'plan' JSON with goal/sections/estimated_slide_count\n"
+        "- the current 'slides' JSON (titles + bullet_points)\n\n"
+        "Task:\n"
+        "1. Check if the slides cover the main goal and the key sections.\n"
+        "2. If coverage is good, return the slides unchanged.\n"
+        "3. If something important is missing, you may:\n"
+        "   - Improve some slide titles slightly, or\n"
+        "   - Add at most ONE extra slide to cover a missing key point.\n\n"
+        "Return ONLY JSON with the same schema as 'slides' from the input:\n"
+        "{ \"slides\": [ { \"title\": ..., \"bullet_points\": [...] }, ... ] }"
+    )
+
+    verify_input = {
+        "user_prompt": user_prompt,
+        "plan": plan,
+        "slides": slide_data.get("slides", []),
+    }
+
+    resp = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": system_msg},
+            {
+                "role": "user",
+                "content": json.dumps(verify_input),
+            },
+        ],
+        max_tokens=800,
+        temperature=0.2,
+    )
+
+    raw = resp.choices[0].message.content
+    refined = safe_json_parse(raw, slide_data)
+
+    # Basic sanity check
+    if not isinstance(refined, dict) or "slides" not in refined:
+        print("[Agent][Verify] Using original slides (refine failed).")
+        return slide_data
+
+    print(f"[Agent][Verify] Slide count after verification: {len(refined.get('slides', []))}")
+    return refined
+
+
+# =========================
+# IMAGE SEARCH (SerpAPI only, single attempt)
 # =========================
 
 def search_image_for_topic(topic: str) -> Optional[str]:
     """
     Use SerpAPI to search ONLY Google Images for the given topic.
+    Single attempt (no retries).
     Returns the URL of the first image result, or None.
     """
-    print(f"[Image] Searching Google Images for topic: {topic!r}")
-    encoded_query = urllib.parse.quote(topic)
+    # Make the query more "safe" / generic to help SerpAPI/Google
+    query = f"{topic}"
+    print(f"[Image] Searching Google Images for query: {query!r}")
+    encoded_query = urllib.parse.quote(query)
 
     url = (
         "https://serpapi.com/search.json"
@@ -204,7 +362,7 @@ def search_image_for_topic(topic: str) -> Optional[str]:
     try:
         resp = requests.get(
             url,
-            timeout=15,
+            timeout=20,
             headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
         )
         resp.raise_for_status()
@@ -267,7 +425,11 @@ def download_image(image_url: str, filename: str = "slide_image.png") -> Optiona
 # POWERPOINT GENERATION
 # =========================
 
-def build_presentation(slide_data: Dict[str, Any], image_path: Optional[str]) -> str:
+def build_presentation(
+    slide_data: Dict[str, Any],
+    image_path: Optional[str],
+    title_color: Optional[RGBColor] = None
+) -> str:
     """
     Builds a PowerPoint presentation from slide_data, plus
     an extra slide containing only the image if provided.
@@ -302,7 +464,10 @@ def build_presentation(slide_data: Dict[str, Any], image_path: Optional[str]) ->
 
         title_run.font.bold = True
         title_run.font.size = Pt(40)
-        title_run.font.color.rgb = RGBColor(0, 102, 204)  # nice blue
+        if title_color is not None:
+            title_run.font.color.rgb = title_color
+        else:
+            title_run.font.color.rgb = RGBColor(0, 102, 204)
         # -------------------------------
 
         tf = body_shape.text_frame
@@ -340,27 +505,46 @@ def build_presentation(slide_data: Dict[str, Any], image_path: Optional[str]) ->
 
 def generate_presentation(user_prompt: str) -> str:
     """
-    High-level orchestration function:
-    1. Generate slide structure via OpenAI.
-    2. Extract main topic.
-    3. Search & download image.
-    4. Build PPTX with content slides + separate image slide.
+    High-level orchestration function (with a mini agent loop):
+    PLAN:
+      - Plan high-level structure from the user prompt.
+    ACT:
+      - Generate slide structure via OpenAI.
+      - Extract main topic.
+      - Search & download image (SerpAPI only, single attempt).
+    VERIFY:
+      - Verify and optionally refine the slide structure.
+    Then build PPTX with content slides + separate image slide.
     """
+    # PLAN
+    print("[Agent] Planning presentation...")
+    plan = agent_plan_presentation(user_prompt)
+
+    # ACT - content
     print("\n[1/3] Generating slide content with OpenAI...")
     slide_content = generate_slide_structure(user_prompt)
 
-    print("[2/3] Extracting main topic for image search...")
+    # VERIFY
+    print("[Agent] Verifying and refining slides...")
+    slide_content = agent_verify_and_refine_slides(user_prompt, plan, slide_content)
+
+    # ACT - topic + style + image
+    print("[2/3] Extracting main topic for image search and styling...")
     topic = extract_main_topic(user_prompt)
     print(f"    Main topic: {topic}")
 
+    print("[Style] Asking AI to select a color...")
+    title_color = choose_topic_color(topic)
+
     print("[2/3] Searching and downloading image...")
     image_url = search_image_for_topic(topic)
-    if image_url is None:
-        print("[Image] No image URL found, proceeding without image.")
     image_path = download_image(image_url) if image_url else None
+    if not image_path:
+        print("[Image] No image will be added (SerpAPI did not return a usable image).")
 
+    # BUILD
     print("[3/3] Building PowerPoint...")
-    pptx_path = build_presentation(slide_content, image_path)
+    pptx_path = build_presentation(slide_content, image_path, title_color=title_color)
 
     return pptx_path
 
