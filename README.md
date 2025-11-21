@@ -1,8 +1,8 @@
-This project generates a PowerPoint from a text prompt using OpenAI.  
-You type a prompt and the program creates slide titles, bullet points, and an optional image slide at the end.
-
+This project generates a PowerPoint presentation from a text prompt using OpenAI.
+You enter any topic, and the program automatically creates slide titles, bullet points, a color theme based on the topic, and images pulled from SerpAPI.
 
 Install everything from: requirements.txt
+
 Dependencies include:
 - openai  
 - python-pptx  
@@ -10,18 +10,16 @@ Dependencies include:
 - requests  
 - Pillow  
 
-
 Create a `.env` file in the project root:
 OPENAI_API_KEY = "your_key_here"
 SERPAPI_API_KEY = "your_serpapi_key_here"
 CSE_ID = "your_cse_id_here"
 
-
 1. Open terminal in the project folder:
 
 2. Create and activate a venv:
-python -m venv venv
-.\venv\Scripts\Activate.ps1
+    1- python -m venv venv
+    2- .\venv\Scripts\Activate.ps1
 
 3. Install dependencies:
 pip install -r requirements.txt
@@ -39,8 +37,9 @@ outputs/output_deck.pptx
 outputs/images/
 
 
-Summary:
-
-- The LLM (OpenAI) generates the slide content.
-- SerpAPI searches for one related image.
-- The final PPTX is fully created by Python using `python-pptx`.
+How It Works:
+The LLM (OpenAI) generates the slide titles & bullet points.
+A mini agent performs planning and verification.
+A color theme is selected based on the topic.
+SerpAPI searches the web for one related image.
+Python builds the final .pptx using python-pptx.
