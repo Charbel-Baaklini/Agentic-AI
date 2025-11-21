@@ -21,12 +21,18 @@ load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY")
 
-if not OPENAI_API_KEY:
-    raise RuntimeError("OPENAI_API_KEY is not set in .env")
-if not SERPAPI_API_KEY:
-    raise RuntimeError("SERPAPI_API_KEY is not set in .env")
+# Mock mode flag: if any required key is missing, we switch to mock mode
+MOCK_MODE: bool = False
 
-client = OpenAI()
+if not OPENAI_API_KEY or not SERPAPI_API_KEY:
+    MOCK_MODE = True
+    print(
+        "[Config] OPENAI_API_KEY or SERPAPI_API_KEY is missing. "
+        "Running in MOCK MODE (no external API calls)."
+    )
+    client = None
+else:
+    client = OpenAI()
 
 OUTPUT_DIR = "outputs"
 IMAGES_DIR = os.path.join(OUTPUT_DIR, "images")
@@ -75,7 +81,7 @@ def safe_json_parse(s: str, fallback: Any) -> Any:
 
 
 # =========================
-# OPENAI FUNCTIONS
+# OPENAI FUNCTIONS (with mock fallbacks)
 # =========================
 
 def extract_main_topic(prompt: str) -> str:
@@ -83,6 +89,10 @@ def extract_main_topic(prompt: str) -> str:
     Extracts a single main topic (1–2 words) from a long prompt
     to be used for image search and styling.
     """
+    if MOCK_MODE:
+        print("[Mock] extract_main_topic -> 'Demo Topic'")
+        return "Demo Topic"
+
     system_msg = (
         "You will be given a long presentation prompt.\n"
         "Return ONLY the main concrete topic as 1 or at most 2 words.\n"
@@ -120,6 +130,29 @@ def generate_slide_structure(prompt: str) -> Dict[str, Any]:
       ]
     }
     """
+    if MOCK_MODE:
+        print("[Mock] generate_slide_structure -> simple canned slides")
+        return {
+            "slides": [
+                {
+                    "title": "Demo Overview",
+                    "bullet_points": [
+                        "This is mock content because API keys are missing.",
+                        f"Original prompt: {prompt[:80]}...",
+                        "Replace MOCK_MODE by setting valid API keys in .env.",
+                    ],
+                },
+                {
+                    "title": "How It Works (Mock)",
+                    "bullet_points": [
+                        "No calls to OpenAI or SerpAPI.",
+                        "Slides are generated locally with fixed text.",
+                        "Useful for testing the pipeline without network access.",
+                    ],
+                },
+            ]
+        }
+
     system_msg = (
         "You are a presentation designer. Create a JSON object with key 'slides'. "
         "'slides' is a list of slides. Each slide has:\n"
@@ -190,6 +223,10 @@ def choose_topic_color(topic: str) -> RGBColor:
     Returns RGBColor parsed from hex or rgb(); if parsing fails,
     falls back to a neutral blue.
     """
+    if MOCK_MODE:
+        print("[Mock] choose_topic_color -> neutral blue")
+        return RGBColor(0, 102, 204)
+
     system_msg = (
         "You will be given a topic.\n"
         "Return ONLY one color that best represents that topic.\n"
@@ -250,6 +287,14 @@ def agent_plan_presentation(user_prompt: str) -> Dict[str, Any]:
       "estimated_slide_count": 4
     }
     """
+    if MOCK_MODE:
+        print("[Mock] agent_plan_presentation -> simple mock plan")
+        return {
+            "goal": f"Explain the main ideas of: {user_prompt[:80]}...",
+            "sections": ["Overview", "Details", "Conclusion"],
+            "estimated_slide_count": 3,
+        }
+
     system_msg = (
         "You are an assistant planning a slide presentation.\n"
         "Given the user's prompt, return a JSON object with:\n"
@@ -292,6 +337,10 @@ def agent_verify_and_refine_slides(
     match the user prompt and the initial plan.
     It can optionally tweak titles or add one missing slide.
     """
+    if MOCK_MODE:
+        print("[Mock] agent_verify_and_refine_slides -> returns slides unchanged")
+        return slide_data
+
     system_msg = (
         "You are verifying a set of slides against a user prompt and a plan.\n"
         "You will be given:\n"
@@ -340,7 +389,7 @@ def agent_verify_and_refine_slides(
 
 
 # =========================
-# IMAGE SEARCH (SerpAPI only, single attempt)
+# IMAGE SEARCH (SerpAPI only, single attempt, mocked if needed)
 # =========================
 
 def search_image_for_topic(topic: str) -> Optional[str]:
@@ -349,7 +398,11 @@ def search_image_for_topic(topic: str) -> Optional[str]:
     Single attempt (no retries).
     Returns the URL of the first image result, or None.
     """
-    # Make the query more "safe" / generic to help SerpAPI/Google
+    if MOCK_MODE:
+        print("[Mock] search_image_for_topic -> None (no image in mock mode)")
+        return None
+
+    # Make the query more "safe" / generic to help SerpAPI/Google if needed
     query = f"{topic}"
     print(f"[Image] Searching Google Images for query: {query!r}")
     encoded_query = urllib.parse.quote(query)
@@ -509,11 +562,11 @@ def generate_presentation(user_prompt: str) -> str:
     PLAN:
       - Plan high-level structure from the user prompt.
     ACT:
-      - Generate slide structure via OpenAI.
+      - Generate slide structure via OpenAI or mock.
       - Extract main topic.
-      - Search & download image (SerpAPI only, single attempt).
+      - Search & download image (SerpAPI only, single attempt; mocked to none).
     VERIFY:
-      - Verify and optionally refine the slide structure.
+      - Verify and optionally refine the slide structure (or leave as-is in mock).
     Then build PPTX with content slides + separate image slide.
     """
     # PLAN
@@ -521,7 +574,7 @@ def generate_presentation(user_prompt: str) -> str:
     plan = agent_plan_presentation(user_prompt)
 
     # ACT - content
-    print("\n[1/3] Generating slide content with OpenAI...")
+    print("\n[1/3] Generating slide content...")
     slide_content = generate_slide_structure(user_prompt)
 
     # VERIFY
@@ -533,14 +586,14 @@ def generate_presentation(user_prompt: str) -> str:
     topic = extract_main_topic(user_prompt)
     print(f"    Main topic: {topic}")
 
-    print("[Style] Asking AI to select a color...")
+    print("[Style] Selecting a color...")
     title_color = choose_topic_color(topic)
 
-    print("[2/3] Searching and downloading image...")
+    print("[2/3] Searching and downloading image (if not in mock mode)...")
     image_url = search_image_for_topic(topic)
     image_path = download_image(image_url) if image_url else None
     if not image_path:
-        print("[Image] No image will be added (SerpAPI did not return a usable image).")
+        print("[Image] No image will be added.")
 
     # BUILD
     print("[3/3] Building PowerPoint...")
